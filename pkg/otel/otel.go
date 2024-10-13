@@ -7,13 +7,16 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	// "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,7 +24,11 @@ import (
 
 // setupOTelSDK bootstraps the OpenTelemetry pipeline.
 // If it does not return an error, make sure to call shutdown for proper cleanup.
-func SetupOTelSDK(ctx context.Context, grpcConnection *grpc.ClientConn) (shutdown func(context.Context) error, err error) {
+func SetupOTelSDK(
+	ctx context.Context,
+	grpcConnection *grpc.ClientConn,
+	serviceName, serviceVersion string,
+) (shutdown func(context.Context) error, err error) {
 	var shutdownFuncs []func(context.Context) error
 
 	// shutdown calls cleanup functions registered via shutdownFuncs.
@@ -45,8 +52,15 @@ func SetupOTelSDK(ctx context.Context, grpcConnection *grpc.ClientConn) (shutdow
 	prop := newPropagator()
 	otel.SetTextMapPropagator(prop)
 
+	// Set up resource
+	resource := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(serviceName),
+		semconv.ServiceVersion(serviceVersion),
+	)
+
 	// Set up trace provider.
-	tracerProvider, err := newTraceProvider(ctx, grpcConnection)
+	tracerProvider, err := newTraceProvider(ctx, grpcConnection, resource)
 	if err != nil {
 		handleErr(err)
 		return
@@ -55,7 +69,7 @@ func SetupOTelSDK(ctx context.Context, grpcConnection *grpc.ClientConn) (shutdow
 	otel.SetTracerProvider(tracerProvider)
 
 	// Set up meter provider.
-	meterProvider, err := newMeterProvider(ctx, grpcConnection)
+	meterProvider, err := newMeterProvider(ctx, grpcConnection, resource)
 	if err != nil {
 		handleErr(err)
 		return
@@ -82,7 +96,7 @@ func newPropagator() propagation.TextMapPropagator {
 	)
 }
 
-func newTraceProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*trace.TracerProvider, error) {
+func newTraceProvider(ctx context.Context, grpcConnection *grpc.ClientConn, resource *resource.Resource) (*trace.TracerProvider, error) {
 	traceExporter, err := otlptracegrpc.New(
 		ctx,
 		otlptracegrpc.WithGRPCConn(grpcConnection),
@@ -92,6 +106,7 @@ func newTraceProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*tr
 	}
 
 	traceProvider := trace.NewTracerProvider(
+		trace.WithResource(resource),
 		trace.WithBatcher(traceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
 			trace.WithBatchTimeout(time.Second)),
@@ -99,7 +114,7 @@ func newTraceProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*tr
 	return traceProvider, nil
 }
 
-func newMeterProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*metric.MeterProvider, error) {
+func newMeterProvider(ctx context.Context, grpcConnection *grpc.ClientConn, resource *resource.Resource) (*metric.MeterProvider, error) {
 	metricExporter, err := otlpmetricgrpc.New(
 		ctx,
 		otlpmetricgrpc.WithGRPCConn(grpcConnection),
@@ -109,6 +124,7 @@ func newMeterProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*me
 	}
 
 	meterProvider := metric.NewMeterProvider(
+		metric.WithResource(resource),
 		metric.WithReader(metric.NewPeriodicReader(
 			metricExporter,
 			// Default is 1m. Set to 3s for demonstrative purposes.
@@ -120,17 +136,22 @@ func newMeterProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*me
 }
 
 func newLoggerProvider(ctx context.Context, grpcConnection *grpc.ClientConn) (*log.LoggerProvider, error) {
-	logExporter, err := otlploggrpc.New(
-		ctx,
-		otlploggrpc.WithGRPCConn(grpcConnection),
-	)
+	// logExporter, err := otlploggrpc.New(
+	// 	ctx,
+	// 	otlploggrpc.WithGRPCConn(grpcConnection),
+	// )
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	logExporter, err := stdoutlog.New()
 	if err != nil {
 		return nil, err
 	}
 
-	loggerProvider := log.NewLoggerProvider(log.WithProcessor(log.NewBatchProcessor(logExporter)))
-
-	// global.SetLoggerProvider(loggerProvider)
+	loggerProvider := log.NewLoggerProvider(
+		log.WithProcessor(log.NewBatchProcessor(logExporter)),
+	)
 
 	return loggerProvider, nil
 }

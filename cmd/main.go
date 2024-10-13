@@ -35,7 +35,14 @@ func run() (err error) {
 	defer grpcConnection.Close()
 
 	// Set up OpenTelemetry Logger, Tracer and Meter
-	otelShutdown, err := otel.SetupOTelSDK(ctx, grpcConnection)
+	otel.SetupLogging()
+
+	otelShutdown, err := otel.SetupOTelSDK(
+		ctx,
+		grpcConnection,
+		"my-service",
+		"0.0.1",
+	)
 	if err != nil {
 		return
 	}
